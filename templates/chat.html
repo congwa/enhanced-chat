@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智能助手 - 对话</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        #chat-messages {
+            height: 60vh;
+            overflow-y: auto;
+            border: 1px solid #dee2e6;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        .message {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .user-message {
+            background-color: #e3f2fd;
+            margin-left: 20%;
+        }
+        .assistant-message {
+            background-color: #f8f9fa;
+            margin-right: 20%;
+        }
+        .system-message {
+            background-color: #fff3cd;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <div class="row">
+            <div class="col-md-12">
+                <div id="chat-messages"></div>
+                <div class="input-group">
+                    <input type="text" id="message-input" class="form-control" placeholder="输入您的消息...">
+                    <button class="btn btn-primary" id="send-button">发送</button>
+                </div>
+                <div class="mt-3">
+                    <button class="btn btn-secondary btn-sm" id="clear-button">清空对话</button>
+                    <button class="btn btn-success btn-sm" id="save-button">保存对话</button>
+                    <a href="/" class="btn btn-info btn-sm">返回首页</a>
+                </div>
+            </div>
+        </div>
+        <div class="row mt-3">
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-header">
+                        会话统计
+                    </div>
+                    <div class="card-body" id="chat-stats">
+                        <!-- 统计信息将通过JS动态更新 -->
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-header">
+                        主题分析
+                    </div>
+                    <div class="card-body" id="topic-analysis">
+                        <!-- 主题分析将通过JS动态更新 -->
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-header">
+                        记忆搜索
+                    </div>
+                    <div class="card-body">
+                        <input type="text" id="memory-search" class="form-control" placeholder="搜索记忆...">
+                        <div id="memory-results" class="mt-2">
+                            <!-- 搜索结果将通过JS动态更新 -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        const messageInput = document.getElementById('message-input');
+        const sendButton = document.getElementById('send-button');
+        const clearButton = document.getElementById('clear-button');
+        const saveButton = document.getElementById('save-button');
+        const chatMessages = document.getElementById('chat-messages');
+
+        socket.on('connect', () => {
+            console.log('Connected to server');
+        });
+
+        socket.on('response', (data) => {
+            addMessage(data.message, data.role, data.timestamp);
+        });
+
+        function addMessage(message, role, timestamp) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}-message`;
+            messageDiv.innerHTML = `
+                <div class="message-content">${message}</div>
+                <small class="text-muted">${timestamp}</small>
+            `;
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function sendMessage() {
+            const message = messageInput.value.trim();
+            if (message) {
+                socket.emit('message', { message: message });
+                addMessage(message, 'user', new Date().toLocaleString());
+                messageInput.value = '';
+            }
+        }
+
+        sendButton.addEventListener('click', sendMessage);
+        messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        clearButton.addEventListener('click', () => {
+            fetch('/clear_history', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        chatMessages.innerHTML = '';
+                    }
+                });
+        });
+
+        saveButton.addEventListener('click', () => {
+            fetch('/save_chat', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        alert('对话已保存: ' + data.filename);
+                    }
+                });
+        });
+    </script>
+</body>
+</html> 
