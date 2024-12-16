@@ -8,6 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime
 from typing import List
+from nltk.tokenize import word_tokenize
+from nltk.tag import pos_tag
 
 import nltk
 import spacy
@@ -16,14 +18,24 @@ import simplemind as sm
 DB_PATH = "enhanced_context.db"
 
 class ContextDatabase:
+    """上下文数据库类，用于管理对话相关的持久化存储"""
+    
     def __init__(self, db_path: str):
+        """
+        初始化数据库连接
+        参数:
+            db_path: 数据库文件路径
+        """
         self.db_path = db_path
         self.init_db()
         self.logger = logging.getLogger(__name__)
 
     @contextmanager
     def get_connection(self):
-        """Context manager for database connections"""
+        """
+        数据库连接的上下文管理器
+        使用 with 语句可以自动处理数据库连接的打开和关闭
+        """
         conn = sqlite3.connect(self.db_path)
         try:
             yield conn
@@ -31,41 +43,54 @@ class ContextDatabase:
             conn.close()
 
     def init_db(self):
-        """Initialize the database with proper schema"""
+        """
+        初始化数据库架构
+        创建必要的数据表:
+        - memory: 存储实体提及记录
+        - identity: 存储用户身份信息
+        - essence_markers: 存储用户特征标记
+        """
         with self.get_connection() as conn:
-            conn.execute(
-                """
+            # 创建记忆表，存储实体和来源信息
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS memory (
-                    entity TEXT,
-                    source TEXT,
-                    last_mentioned TIMESTAMP,
-                    mention_count INTEGER DEFAULT 1,
+                    entity TEXT,           -- 实体名称
+                    source TEXT,           -- 来源（用户/AI）
+                    last_mentioned TIMESTAMP,  -- 最后提及时间
+                    mention_count INTEGER DEFAULT 1,  -- 提及次数
                     PRIMARY KEY (entity, source)
                 )
-            """
-            )
-            conn.execute(
-                """
+            """)
+            
+            # 创建身份表，存储用户标识
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS identity (
                     id INTEGER PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    last_updated TIMESTAMP
+                    name TEXT NOT NULL,    -- 用户名称
+                    last_updated TIMESTAMP -- 最后更新时间
                 )
-            """
-            )
-            conn.execute(
-                """
+            """)
+            
+            # 创建特征标记表，存储用户特征
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS essence_markers (
-                    marker_type TEXT,
-                    marker_text TEXT,
-                    timestamp TIMESTAMP,
+                    marker_type TEXT,      -- 标记类���
+                    marker_text TEXT,      -- 标记内容
+                    timestamp TIMESTAMP,    -- 创建时间
                     PRIMARY KEY (marker_type, marker_text)
                 )
-            """
-            )
+            """)
 
     def store_entity(self, entity: str, source: str = "user") -> None:
-        """Store or update entity mention with source tracking"""
+        """
+        存储或更新实体提及记录
+        参数:
+            entity: 实体名称
+            source: 来源（默认为"user"）
+        功能:
+            - 如果实体不存在，创建新记录
+            - 如果实体存在，更新最后提及时间和提及次数
+        """
         with self.get_connection() as conn:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             conn.execute(
@@ -81,9 +106,20 @@ class ContextDatabase:
             conn.commit()
 
     def retrieve_recent_entities(self, days: int = 7) -> List[tuple]:
-        """Retrieve recently mentioned entities with frequency and source"""
+        """
+        检索最近提到的实体
+        参数:
+            days: 要查找的天数范围
+        返回:
+            包含实体信息的元组列表，每个组包含：
+            - 实体名称
+            - 总提及次数
+            - 用户提及次数
+            - AI提及次数
+        """
         try:
             with self.get_connection() as conn:
+                # 查询并按提及次数降序排序
                 cur = conn.cursor()
                 cur.execute(
                     """
@@ -189,37 +225,47 @@ class ContextDatabase:
             return []
 
 class EnhancedContextPlugin(sm.BasePlugin):
-    model_config = {"extra": "allow"}
-
+    """
+    增强型上下文插件类
+    用于管理对话上下文、实体识别和用户特征提取的主要类
+    """
+    
     def __init__(self, verbose: bool = False):
+        """
+        初始化插件
+        参数:
+            verbose: 是否启用详细日志输出
+        """
         super().__init__()
-        # Set up logging
         self.verbose = verbose
+        
+        # 配置日志级别
         if verbose:
             logging.basicConfig(
-                level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+                level=logging.INFO, 
+                format="%(asctime)s - %(levelname)s - %(message)s"
             )
         else:
             logging.basicConfig(level=logging.WARNING)
         self.logger = logging.getLogger(__name__)
 
-        # Initialize NLP model
+        # 加载自然语言处理模型
         try:
             self.nlp = spacy.load("en_core_web_sm")
         except OSError:
             self.logger.error(
-                "Failed to load spaCy model. Please install it using: python -m spacy download en_core_web_sm"
+                "无法加载spaCy模型，请用以下命令安装：python -m spacy download en_core_web_sm"
             )
             raise
 
-        # Initialize database
+        # 初始化数据库连接
         self.db = ContextDatabase(DB_PATH)
-        self.logger.info(f"EnhancedContextPlugin initialized with database: {DB_PATH}")
+        self.logger.info(f"增强型上下文插件已初始化，数据库路径：{DB_PATH}")
 
-        # Load identity from database
+        # 从数据库加载用户身份信息
         self.personal_identity = self.db.load_identity()
 
-        # Download required NLTK data silently
+        # 静默下载NLTK所需数据
         try:
             with open(os.devnull, "w") as null_out:
                 with (
@@ -229,36 +275,40 @@ class EnhancedContextPlugin(sm.BasePlugin):
                     nltk.download("punkt", quiet=True)
                     nltk.download("averaged_perceptron_tagger", quiet=True)
         except LookupError as e:
-            self.logger.error(f"Error downloading NLTK data: {e}")
+            self.logger.error(f"下载NLTK数据时出错: {e}")
 
-        # Add LLM personality traits for easter egg
+        # 定义AI人格特征（用于特殊互动）
         self.llm_personalities = [
-            "You are a wise philosopher who speaks in riddles",
-            "You are an excited scientist who loves discovering patterns",
-            "You are a detective who analyzes every detail",
-            "You are a poet who sees beauty in connections",
-            "You are a historian who relates everything to the past",
+            "你是一个说话谜语般的智者",
+            "你是一个热衷于发现规律的科学家",
+            "你是一个分析每个细节的侦探",
+            "你是一个在联系中发现美的诗人",
+            "你是一个将一切与历史联系的历史学家",
         ]
 
-        # Add these lines to store the conversation's model and provider
+        # 存储对话模型和提供者信��
         self.llm_model = None
         self.llm_provider = None
 
     def extract_entities(self, text: str) -> List[str]:
-        """Extract named entities with improved filtering"""
+        """
+        从文本中提取命名实体
+        参数:
+            text: 需要分析的文本
+        返回:
+            提取出的实体列表
+            
+        功能:
+            - 使用spaCy进行实体识别
+            - 过滤出重要的实体类型
+            - 去除无效实体（如数字、单字符等）
+        """
         doc = self.nlp(text)
 
-        # Define important entity types
-        important_types = {
-            "PERSON",
-            "ORG",
-            "GPE",
-            "NORP",
-            "PRODUCT",
-            "EVENT",
-            "WORK_OF_ART",
-        }
+        # 定义重要的实体类型
+        important_types = {'人名', '组织机构', '地理政治实体（国家、城市等）', '国籍、宗教或政治团体', '产品', '事件', '艺术作品'}
 
+        # 提取并过滤实体
         entities = [
             ent.text.strip()
             for ent in doc.ents
@@ -271,81 +321,99 @@ class EnhancedContextPlugin(sm.BasePlugin):
 
         return list(set(entities))
 
-    def format_context_message(
-        self, entities: List[tuple], include_identity: bool = True
-    ) -> str:
-        """Format context message with essence markers"""
+    def format_context_message(self, entities: List[tuple], include_identity: bool = True) -> str:
+        """
+        格式化上下文消息
+        参数:
+            entities: 实体列表
+            include_identity: 是否包含用户身份信息
+        返回:
+            ���式化后的上下文消息字符串
+            
+        功能:
+            - 组合用户身份信息
+            - 添加用户特征标记
+            - 整理最近讨论的话题
+        """
         context_parts = []
 
-        # Add identity context
+        # 添加身份信息
         if include_identity and self.personal_identity:
-            context_parts.append(f"The user's name is {self.personal_identity}.")
+            context_parts.append(f"用户名称是 {self.personal_identity}。")
 
-        # Add essence markers
+        # 添加特征标记
         essence_markers = self.retrieve_essence_markers()
         if essence_markers:
             markers_by_type = {}
             for marker_type, marker_text in essence_markers:
                 markers_by_type.setdefault(marker_type, []).append(marker_text)
 
-            context_parts.append("User characteristics:")
+            context_parts.append("用户特征：")
             for marker_type, markers in markers_by_type.items():
                 context_parts.append(f"- {marker_type.title()}: {', '.join(markers)}")
 
-        # Add entity context with user/llm breakdown
+        # 添加实体上下文,包含用户和AI的提及次数
         if entities:
             entity_strings = [
-                f"{entity} (mentioned {total} times - User: {user_count}, AI: {llm_count})"
+                f"{entity} (提及 {total} 次 - 用户: {user_count}, AI: {llm_count})"
                 for entity, total, user_count, llm_count in entities
             ]
 
             topics = (
-                ", ".join(entity_strings[:-1]) + f" and {entity_strings[-1]}"
+                "、".join(entity_strings[:-1]) + f"和{entity_strings[-1]}"
                 if len(entity_strings) > 1
                 else entity_strings[0]
             )
 
-            context_parts.append(f"Recent conversation topics: {topics}")
+            context_parts.append(f"最近讨论的话题: {topics}")
 
         return "\n".join(context_parts)
 
     def extract_essence_markers(self, text: str) -> List[tuple[str, str]]:
-        """Extract essence markers from text."""
+        """
+        从文本中提取用户特征标记
+        参数:
+            text: 需要分析的文本
+        返回:
+            包含(标记类型, 标记内容)的元组列表
+        """
+        # 定义不同类型的特征标记模式
         patterns = {
-            "value": [
-                r"I (?:really )?(?:believe|think) (?:that )?(.+)",
-                r"(?:It's|Its) important (?:to me )?that (.+)",
-                r"I value (.+)",
-                r"(?:The )?most important (?:thing|aspect) (?:to me )?is (.+)",
+            "value": [  # 价值观相关
+                r"我(?:真的)?(?:认为|觉得)(?:说)?(.+)",
+                r"(?:对我来说)?(?:很|非常)?重要的是(.+)", 
+                r"我很看重(.+)",
+                r"(?:对我来说)?最重要的(?:事情|方面)是(.+)",
             ],
-            "identity": [
-                r"I am(?: a| an)? (.+)",
-                r"I consider myself(?: a| an)? (.+)",
-                r"I identify as(?: a| an)? (.+)",
+            "identity": [  # 身份认同相关
+                r"我是(?:一个|一位)?(.+)",
+                r"我觉得自己是(?:一个|一位)?(.+)",
+                r"我认同自己是(?:一个|一位)?(.+)",
             ],
-            "preference": [
-                r"I (?:really )?(?:like|love|enjoy|prefer) (.+)",
-                r"I can't stand (.+)",
-                r"I hate (.+)",
-                r"I always (.+)",
-                r"I never (.+)",
+            "preference": [  # 偏好相关
+                r"我(?:真的)?(?:喜欢|爱|享受|偏好)(.+)",
+                r"我受不了(.+)",
+                r"我讨厌(.+)",
+                r"我总是(.+)",
+                r"我从不(.+)",
             ],
-            "emotion": [
-                r"I feel (.+)",
-                r"I'm feeling (.+)",
-                r"(?:It|That) makes me feel (.+)",
+            "emotion": [  # 情感相关
+                r"我感觉(.+)",
+                r"我现在感觉(.+)", 
+                r"(?:这|那)让我感觉(.+)",
             ],
         }
 
         markers = []
         doc = self.nlp(text)
 
+        # 遍历每个句子进行特征提取
         for sent in doc.sents:
-            sent_text = sent.text.strip().lower()
+            sent_text = sent.text.strip()
 
             for marker_type, pattern_list in patterns.items():
                 for pattern in pattern_list:
-                    for match in re.finditer(pattern, sent_text, re.IGNORECASE):
+                    for match in re.finditer(pattern, sent_text):
                         marker_text = match.group(1).strip()
                         if self._is_valid_marker(marker_text):
                             markers.append((marker_type, marker_text))
@@ -353,12 +421,29 @@ class EnhancedContextPlugin(sm.BasePlugin):
         return markers
 
     def _is_valid_marker(self, marker_text: str) -> bool:
-        """Helper method to validate essence markers"""
-        invalid_words = {"um", "uh", "like"}
+        """
+        验证特征标记的有效性
+        参数:
+            marker_text: 待验证的标记文本
+        返回:
+            布尔值表示标记是否有效
+        """
+        invalid_words = {"嗯", "啊", "那个", "这个", "就是", "然后", "所以"}  # 无效词列表
         return len(marker_text) > 3 and not any(w in marker_text for w in invalid_words)
 
     def pre_send_hook(self, conversation: sm.Conversation) -> bool:
-        """Process user message before sending to LLM"""
+        """
+        发送消息前的处理钩子
+        参数:
+            conversation: 对话对象
+        返回:
+            布尔值表示是否继续处理
+        功能:
+            - 记录对话模型信息
+            - 处理特殊命令
+            - 处理用户消息
+            - 添加上下文信息
+        """
         self.llm_model = conversation.llm_model
         self.llm_provider = conversation.llm_provider
 
@@ -366,16 +451,16 @@ class EnhancedContextPlugin(sm.BasePlugin):
         if not last_message:
             return True
 
-        # Handle special commands
+        # 处理特殊命令
         if result := self._handle_special_commands(conversation, last_message.text):
             return result
 
-        self.logger.info(f"Processing user message: {last_message.text}")
+        self.logger.info(f"处理用户消息: {last_message.text}")
 
-        # Process entities and markers
+        # 处理实体和标记
         self._process_user_message(last_message.text)
 
-        # Add context
+        # 添加上下文
         self._add_context_to_conversation(conversation)
 
         return True
@@ -383,7 +468,14 @@ class EnhancedContextPlugin(sm.BasePlugin):
     def _handle_special_commands(
         self, conversation: sm.Conversation, message: str
     ) -> bool | None:
-        """Handle special commands like /summary"""
+        """
+        处理特殊命令
+        参数:
+            conversation: 对话对象
+            message: 消息内容
+        返回:
+            处理结果，None表示不是特殊命令
+        """
         if message.strip().lower() == "/summary":
             summary = self.summarize_memory()
             conversation.add_message(role="assistant", text=summary)
@@ -395,86 +487,147 @@ class EnhancedContextPlugin(sm.BasePlugin):
         return None
 
     def _process_user_message(self, message: str) -> None:
-        """Process user message for entities and markers"""
-        # Extract and store entities
+        """
+        处理用户消息
+        参数:
+            message: 用户消息内容
+        功能:
+            - 提取并存储实体
+            - 提取并存储特征标记
+        """
+        # 提取并存储实体
         entities = self.extract_entities(message)
         for entity in entities:
             self.store_entity(entity, source="user")
 
-        # Extract and store essence markers
+        # 提取并存储特征标记
         essence_markers = self.extract_essence_markers(message)
         for marker_type, marker_text in essence_markers:
             self.store_essence_marker(marker_type, marker_text)
-            self.logger.info(f"Found essence marker: {marker_type} - {marker_text}")
+            self.logger.info(f"发现特征标记: {marker_type} - {marker_text}")
 
     def _add_context_to_conversation(self, conversation: sm.Conversation) -> None:
-        """Add context message to conversation"""
+        """
+        向对话中添加上下文信息
+        参数:
+            conversation: 对话对象
+        功能:
+            - 获取最近实体信息
+            - 格式化上下文消息
+            - 将上下文添加到对话中
+        """
         recent_entities = self.retrieve_recent_entities(days=30)
         context_message = self.format_context_message(recent_entities)
         if context_message:
             conversation.add_message(role="user", text=context_message)
-            self.logger.info(f"Added context message: {context_message}")
+            self.logger.info(f"添加上下文消息: {context_message}")
 
     def store_entity(self, entity: str, source: str = "user") -> None:
+        """
+        存储实体信息
+        参数:
+            entity: 实体名称
+            source: 来源（用户/AI）
+        """
         self.db.store_entity(entity, source)
 
     def store_identity(self, identity: str) -> None:
+        """
+        存储用户身份信息
+        参数:
+            identity: 用户身份标识
+        """
         self.db.store_identity(identity)
         self.personal_identity = identity
 
     def load_identity(self) -> str | None:
+        """
+        加载用户身份信息
+        返回:
+            用户身份标识或None
+        """
         self.personal_identity = self.db.load_identity()
         return self.personal_identity
 
     def store_essence_marker(self, marker_type: str, marker_text: str) -> None:
+        """
+        存储特征标记
+        参数:
+            marker_type: 标记类型
+            marker_text: 标记内容
+        """
         self.db.store_essence_marker(marker_type, marker_text)
 
     def retrieve_essence_markers(self, days: int = 30) -> List[tuple[str, str]]:
+        """
+        检索特征标记
+        参数:
+            days: 查找的天数范围
+        返回:
+            特征标记列表
+        """
         return self.db.retrieve_essence_markers(days)
 
     def summarize_memory(self, days: int = 30) -> str:
-        """Consolidate recent conversation memory into a summary"""
+        """
+        汇总对话记忆
+        参数:
+            days: 汇总的天数范围
+        返回:
+            记忆汇总文本
+        """
         entities = self.retrieve_recent_entities(days=days)
         if not entities:
-            return "No recent conversation history to consolidate."
+            return "没有找到最近的对话历史。"
 
-        # Group entities by frequency
-        frequent = []
-        occasional = []
+        # 按频率分组实体
+        frequent = []  # 频繁提到的实体
+        occasional = []  # 偶尔提到的实体
 
         for entity, total, user_count, llm_count in entities:
             if total >= 3:
-                frequent.append(f"{entity} (mentioned {total} times)")
+                frequent.append(f"{entity} (提到 {total} 次)")
             else:
-                occasional.append(f"{entity} (mentioned {total} times)")
+                occasional.append(f"{entity} (提到 {total} 次)")
 
-        # Build summary
+        # 构建汇总信息
         summary_parts = []
 
         if self.personal_identity:
-            summary_parts.append(f"User Identity: {self.personal_identity}")
+            summary_parts.append(f"用户身份: {self.personal_identity}")
 
         if frequent:
-            summary_parts.append("Frequently Discussed Topics:")
+            summary_parts.append("经常讨论的话题:")
             summary_parts.extend([f"- {item}" for item in frequent])
 
         if occasional:
-            summary_parts.append("Other Topics Mentioned:")
+            summary_parts.append("其他到的话题:")
             summary_parts.extend([f"- {item}" for item in occasional])
 
         return "\n".join(summary_parts)
 
     def simulate_llm_conversation(self, context: str, num_turns: int = 3) -> str:
-        """Simulate a conversation between multiple LLM personalities about the context"""
+        """
+        模拟多个AI人格之间的对话
+        参数:
+            context: 对话上下文
+            num_turns: 对话轮次
+        返回:
+            模拟对话内容
+        """
         conversation_log = []
 
         def get_response(personality: str, previous_messages: str) -> str:
+            """
+            获取单个AI人格的响应
+            参数:
+                personality: AI人格特征
+                previous_messages: 之前的对话内容
+            """
             prompt = (
-                f"{personality}. You are participating in a brief group discussion "
-                f"about the following context:\n{context}\n\n"
-                f"Previous messages:\n{previous_messages}\n\n"
-                "Provide a short, focused response (1-2 sentences) that builds on "
-                "the discussion. Be creative but stay on topic."
+                f"{personality}。你正在参与一个关于以下上下文的简短讨论：\n{context}\n\n"
+                f"之前的消息：\n{previous_messages}\n\n"
+                "请提供一个简短的回应（1-2句话），要有创意但不要偏离主题。"
             )
 
             temp_conv = sm.create_conversation(
@@ -498,85 +651,97 @@ class EnhancedContextPlugin(sm.BasePlugin):
         return "\n\n".join(conversation_log)
 
     def store_llm_memory(self, conversation: sm.Conversation) -> None:
-        """Generate and store memories from the LLM's perspective of the conversation.
-
-        Args:
-            conversation: The conversation object containing message history
         """
-        prompt = """Based on the recent messages, what are the most important things to remember?
-        Format each memory on a new line starting with MEMORY:
-        For example:
-        MEMORY: User prefers Python over JavaScript
-        MEMORY: User is working on a machine learning project"""
+        从AI的角度生成并存储对话记忆
+        参数:
+            conversation: 包含消息历史的对话对象
+        功能:
+            - 分析最近的对话内容
+            - 生成AI视角的记忆点
+            - 将记忆存储到数据库
+        """
+        prompt = """基于最近的消息，请列出最重要的记忆点。
+        每条记忆请用新行并以MEMORY:开头
+        例如:
+        MEMORY: 用户更喜欢Python而不是JavaScript
+        MEMORY: 用户正在做一个机器学习项目"""
 
-        # Create temporary conversation for memory generation
+        # 创建临时对话用于记忆生成
         temp_conv = sm.create_conversation(
             llm_model=self.llm_model, llm_provider=self.llm_provider
         )
 
-        # Add last few messages for context
-        for msg in conversation.messages[-3:]:  # Last 3 messages
+        # 添加最近的消息作为上下文
+        for msg in conversation.messages[-3:]:  # 最后3条消息
             temp_conv.add_message(role=msg.role, text=msg.text)
 
-        # Get memories from LLM
+        # 从AI获取记忆
         temp_conv.add_message(role="user", text=prompt)
         response = temp_conv.send()
 
-        # Process and store memories
+        # 处理并存储记忆
         if response and response.text:
             for line in response.text.split("\n"):
                 if line.strip().startswith("MEMORY:"):
                     memory = line.replace("MEMORY:", "").strip()
                     self.store_entity(memory, source="llm")
-                    self.logger.info(f"Stored LLM-generated memory: {memory}")
+                    self.logger.info(f"存储AI生成的记忆: {memory}")
 
     def retrieve_recent_entities(self, days: int = 7) -> List[tuple]:
-        """Retrieve recently mentioned entities with their frequency data.
-
-        Args:
-            days: Number of days to look back
-
-        Returns:
-            List of tuples containing (entity, total_mentions, user_mentions, llm_mentions)
+        """
+        检索最近提到的实体及其频率数据
+        参数:
+            days: 查找的天数范围
+        返回:
+            包含(实体, 总提及次数, 用户提及次数, AI提及次数)的元组列表
         """
         try:
             return self.db.retrieve_recent_entities(days)
         except Exception as e:
-            self.logger.error(f"Error retrieving recent entities: {e}")
+            self.logger.error(f"检索最近实体时出错: {e}")
             return []
 
     def post_response_hook(self, conversation: sm.Conversation) -> None:
-        """Process assistant's response after it's received."""
-        # Get the last assistant message
+        """
+        AI响应后的处理钩子
+        功能:
+            - 提取AI响应中的实体
+            - 存储AI生成的记忆
+        """
+        # 获取最后一个AI响应消息
         last_message = conversation.get_last_message(role="assistant")
         if not last_message:
             return
 
-        # Extract and store entities from assistant's response
+        # 提取并存储AI响应中的实体
         entities = self.extract_entities(last_message.text)
         for entity in entities:
             self.store_entity(entity, source="llm")
 
-        # Always generate and store LLM memories
+        # 总是生成并存储AI生成的记忆
         self.store_llm_memory(conversation)
 
     def extract_identity(self, text: str) -> str | None:
-        """Extract identity statements from text.
-
-        Args:
-            text: The text to analyze
-
-        Returns:
-            The extracted identity or None if not found
+        """
+        从文本中提取身份声明
+        
+        参数:
+            text: 需要分析的文本
+        
+        返回:
+            提取出的身份信息,如果未找到则返回 None
         """
         text = text.lower().strip()
 
+        # 定义身份识别的正则表达式模式
         identity_patterns = [
-            (r"^i am (.+)$", 1),
-            (r"^my name is (.+)$", 1),
-            (r"^call me (.+)$", 1),
+            (r"^我是(.+)$", 1),  # 匹配 "我是..."
+            (r"^我叫(.+)$", 1),  # 匹配 "我叫..."
+            (r"^我的名字是(.+)$", 1),  # 匹配 "我的名字是..."
+            (r"^叫我(.+)$", 1),  # 匹配 "叫我..."
         ]
 
+        # 遍历模式进行匹配
         for pattern, group in identity_patterns:
             if match := re.match(pattern, text):
                 identity = match.group(group).strip()
@@ -585,88 +750,94 @@ class EnhancedContextPlugin(sm.BasePlugin):
         return None
 
     def is_identity_question(self, text: str) -> bool:
-        """Detect if text contains a question about identity.
-
-        Args:
-            text: The text to analyze
-
-        Returns:
-            True if text contains an identity question
         """
-        # Tokenize and tag parts of speech
+        检文本是否包含身份相关问题
+        
+        参数:
+            text: 需要分析的文本
+        
+        ��回:
+            布尔值,表示是否是身份问题
+        """
+        # 对文本进行分词和词性标注
         tokens = word_tokenize(text.lower())
         tagged = pos_tag(tokens)
 
-        # Extract key words and patterns
+        # 提取关键词和模式
         words = set(tokens)
-        has_question_word = any(word in ["who", "what"] for word in words)
-        has_identity_term = any(word in ["i", "me", "my", "name"] for word in words)
+        # 检查是否包含疑问词
+        has_question_word = any(word in ["谁", "什么", "哪个"] for word in words)
+        # 检查是否包含身份相关词
+        has_identity_term = any(word in ["我", "你", "名字", "叫"] for word in words)
+        # 检查是否包含对话相关词
         has_conversation_term = any(
-            word in ["talking", "speaking", "chatting"] for word in words
+            word in ["说话", "聊天", "交谈"] for word in words
         )
 
-        # Check for question structure
+        # 检查问句结构
         is_question = (
-            text.endswith("?")
-            or has_question_word
-            or any(tag in ["WP", "WRB"] for word, tag in tagged)
+            text.endswith("?") or  # 以问号结尾
+            text.endswith("？") or  # 以中文问号结尾
+            has_question_word or  # 包含疑问词
+            any(tag in ["WP", "WRB"] for word, tag in tagged)  # 包含特定词性标记
         )
 
-        # Combine conditions for identity questions
+        # 综合判断是否为身份问题
         is_identity_question = is_question and (
             has_identity_term or (has_question_word and has_conversation_term)
         )
 
         if is_identity_question:
-            self.logger.info(f"Detected identity question: {text}")
+            self.logger.info(f"检测到身份问题: {text}")
 
         return is_identity_question
 
     def get_all_topics(self, days: int = 90) -> str:
-        """Get a comprehensive list of all conversation topics.
-
-        Args:
-            days: Number of days to look back (default: 90)
-
-        Returns:
-            Formatted string containing all topics and their mention counts
+        """
+        获取所有对话主题的综合列表
+        
+        参数:
+            days: 查找的天数范围(默认90天)
+        
+        返回:
+            包含所有主题及其提及次数的格式化字符串
         """
         entities = self.retrieve_recent_entities(days=days)
         if not entities:
-            return "No conversation topics found in the specified time period."
+            return "在指定时间段内未找到对话主题。"
 
-        # Sort entities by total mentions
+        # 按提及次数对实体排序
         sorted_entities = sorted(entities, key=lambda x: x[1], reverse=True)
 
-        # Format output using markdown
-        output_parts = ["## Conversation Topics"]
+        # 使用 markdown 格式化输出
+        output_parts = ["## 对话主题"]
 
-        # Add top mentions with details
+        # 添加带详细信息的主要提及
         for entity, total, user_count, llm_count in sorted_entities:
-            source_breakdown = f"(User: {user_count}, AI: {llm_count})"
-            output_parts.append(f"- **{entity}**: {total} mentions {source_breakdown}")
+            source_breakdown = f"(用户: {user_count}, AI: {llm_count})"
+            output_parts.append(f"- **{entity}**: {total} 次提及 {source_breakdown}")
 
-        # Add list of all topics
+        # 添加所有主题列表
         all_topics = [entity[0] for entity in sorted_entities]
         if all_topics:
-            output_parts.append("\n## All Topics Mentioned")
+            output_parts.append("\n## 所有提及的主题")
             output_parts.append(", ".join(all_topics))
 
         return "\n".join(output_parts)
 
     def get_memories(self) -> str:
-        """Retrieve and format all stored memories."""
+        """获取并格式化所有存储的记忆"""
         entities = self.db.retrieve_recent_entities(
             days=3650
-        )  # Retrieve entities from the last 10 years
+        )  # 获取最近10年的实体记录
         if not entities:
-            return "No memories found."
+            return "未找到任何记忆。"
 
-        memory_parts = ["## All Stored Memories"]
+        memory_parts = ["## 所有存储的记忆"]
 
         for entity, total, user_count, llm_count in entities:
             memory_parts.append(
-                f"- **{entity}**: {total} mentions (User: {user_count}, AI: {llm_count})"
+                f"- **{entity}**: 共提及 {total} 次 (用户: {user_count}, AI: {llm_count})"
             )
 
         return "\n".join(memory_parts)
@@ -682,9 +853,9 @@ class EnhancedContextPlugin(sm.BasePlugin):
 
         # 初始化 NLP 模型
         try:
-            self.nlp = spacy.load("en_core_web_sm")
+            self.nlp = spacy.load("zh_core_web_sm")
         except OSError:
-            self.logger.error("请安装 spaCy 模型: python -m spacy download en_core_web_sm")
+            self.logger.error("请安装 spaCy 模型: python -m spacy download zh_core_web_sm")
             raise
 
         # 初始化数据库
@@ -699,7 +870,7 @@ class EnhancedContextPlugin(sm.BasePlugin):
     def extract_entities(self, text: str) -> List[str]:
         """提取命名实体"""
         doc = self.nlp(text)
-        important_types = {'PERSON', 'ORG', 'GPE', 'NORP', 'PRODUCT', 'EVENT'}
+        important_types = {'人名', '组织机构', '地理政治实体（国家、城市等）', '国籍、宗教或政治团体', '产品', '事件'}
         
         entities = [ent.text.strip() for ent in doc.ents 
                    if ent.label_ in important_types 
